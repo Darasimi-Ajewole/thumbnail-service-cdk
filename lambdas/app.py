@@ -1,5 +1,7 @@
 import boto3
 from io import BytesIO
+import PIL
+import json
 from PIL import Image, ImageOps
 import os
 import uuid
@@ -14,10 +16,11 @@ dynamodb = boto3.resource(
 dbtable = str(os.getenv('MY_TABLE'))
 
 
-def s3_thumbnail_generator(event, context):
+def s3_thumbnail_generator(sqs_event, context):
 
     # parse event
-    print("EVENT:::", event)
+    print("EVENT:::", sqs_event)
+    event = json.loads(sqs_event['Records'][0]['body'])
     bucket = event['Records'][0]['s3']['bucket']['name']
     key = event['Records'][0]['s3']['object']['key']
     img_size = event['Records'][0]['s3']['object']['size']
@@ -67,7 +70,6 @@ def upload_to_s3(bucket, key, image, img_size):
     out_thumbnail.seek(0)
 
     response = s3.put_object(
-        ACL='public-read',
         Body=out_thumbnail,
         Bucket=bucket,
         ContentType='image/png',

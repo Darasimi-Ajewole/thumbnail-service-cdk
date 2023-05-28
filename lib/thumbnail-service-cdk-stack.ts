@@ -4,9 +4,13 @@ import {Code, Function, LayerVersion, Runtime } from 'aws-cdk-lib/aws-lambda'
 import { join } from 'path';
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications'
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
+
 import { Effect, PolicyStatement } from 'aws-cdk-lib/aws-iam';
 import { AttributeType, BillingMode, Table } from 'aws-cdk-lib/aws-dynamodb'
 import { LambdaIntegration, RestApi } from 'aws-cdk-lib/aws-apigateway';
+import * as lambdaEventSource from 'aws-cdk-lib/aws-lambda-event-sources';
 
 
 export class ThumbnailServiceCdkStack extends Stack {
@@ -19,8 +23,13 @@ export class ThumbnailServiceCdkStack extends Stack {
        removalPolicy: RemovalPolicy.DESTROY
     });
 
+    // create SQS
+    const thumbnailQueue = new sqs.Queue(this, 'thumbnailProcessingQueue', {
+      visibilityTimeout: Duration.seconds(300),
+      queueName: 'thumbnail-processing-queue',
+    });
 
-
+    // thumbnail creator
     const handler = new Function(this, 'handler-function-resizeImg', {
       runtime: Runtime.PYTHON_3_8,
       timeout: Duration.seconds(20),
@@ -29,7 +38,7 @@ export class ThumbnailServiceCdkStack extends Stack {
       layers: [LayerVersion.fromLayerVersionArn(
         this,
         "PIL",
-        "arn:aws:lambda:us-west-2:770693421928:layer:Klayers-python38-Pillow:15"
+        "arn:aws:lambda:us-west-2:770693421928:layer:Klayers-p38-Pillow:7"
       )],
       environment: {
          MY_TABLE: table.tableName,
@@ -37,46 +46,56 @@ export class ThumbnailServiceCdkStack extends Stack {
          THUMBNAIL_SIZE: "128"
       }
     });
+
+    const eventSource = new SqsEventSource(thumbnailQueue);
+
+    // Grant permission for lambda to poll events from sqs
+    handler.addEventSource(eventSource)
     
     // Grant permission for lambda to writeread
     table.grantReadWriteData(handler)
 
-
-      // List all thumbnails
-      const handlerListThumbnails = new Function(this, 'handler-function-list-thumbs', {
-        runtime: Runtime.PYTHON_3_8, 
-        handler: 'app.s3_get_thumbnail_urls', // we are using python here!
-        timeout: Duration.seconds(20),
-        memorySize: 512,
-        code: Code.fromAsset(join(__dirname, '../lambdas')),
-        layers: [LayerVersion.fromLayerVersionArn(this,"PIL-2", 'arn:aws:lambda:us-west-2:770693421928:layer:Klayers-python38-Pillow:15' )],
-        environment: {
-          MY_TABLE: table.tableName,
-          REGION_NAME: "us-west-2",
-          THUMBNAIL_SIZE: "128",
-         
-        }
-      });
-      table.grantReadData(handlerListThumbnails)
-
     const s3Bucket = new s3.Bucket(this, 'photo-bucket', {
       removalPolicy: RemovalPolicy.DESTROY,
-      autoDeleteObjects: true
+      autoDeleteObjects: true,
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_PREFERRED
     });
+
     s3Bucket.grantReadWrite(handler);
+    s3Bucket.grantPutAcl(handler);
+    s3Bucket.grantPut(handler);
 
     s3Bucket.addEventNotification(s3.EventType.OBJECT_CREATED,
-    new s3n.LambdaDestination(handler));
+      new s3n.SqsDestination(thumbnailQueue));
+
 
     handler.addToRolePolicy(
-      new PolicyStatement({
-        effect: Effect.ALLOW,
-        actions: ['s3:*'],
-        resources: ['*'] //'s3:PutObject, 's3:GetObject'
+        new PolicyStatement({
+          effect: Effect.ALLOW,
+          actions: ['s3:*'],
+          resources: ['*'] //'s3:PutObject, 's3:GetObject'
+        })
+      );
 
 
-      })
-    );
+    // List all thumbnails
+    const handlerListThumbnails = new Function(this, 'handler-function-list-thumbs', {
+      runtime: Runtime.PYTHON_3_8, 
+      handler: 'app.s3_get_thumbnail_urls', // we are using python here!
+      timeout: Duration.seconds(20),
+      memorySize: 512,
+      code: Code.fromAsset(join(__dirname, '../lambdas')),
+      layers: [LayerVersion.fromLayerVersionArn(this,"PIL-2", 'arn:aws:lambda:us-west-2:770693421928:layer:Klayers-p38-Pillow:7' )],
+      environment: {
+        MY_TABLE: table.tableName,
+        REGION_NAME: "us-west-2",
+        THUMBNAIL_SIZE: "128",
+        
+      }
+    });
+
+    table.grantReadData(handlerListThumbnails)
+
 
     // Create the REST api
     const thumbsApi = new RestApi(this, "thumb-api", {
@@ -85,21 +104,10 @@ export class ThumbnailServiceCdkStack extends Stack {
 
     // LambdaIntegration
     const handlerApiIntegration = new LambdaIntegration(handlerListThumbnails,
-    {requestTemplates: {"application/json": '{"statusCode": "200"}'}});
+      {requestTemplates: {"application/json": '{"statusCode": "200"}'}});
 
     const mainPath = thumbsApi.root.addResource("images");
     mainPath.addMethod("GET", handlerApiIntegration)
-
-
-
-
-
-
-
-
-
-
-
   
   }
 }
