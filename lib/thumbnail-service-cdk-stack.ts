@@ -69,15 +69,6 @@ export class ThumbnailServiceCdkStack extends Stack {
       new s3n.SqsDestination(thumbnailQueue));
 
 
-    handler.addToRolePolicy(
-        new PolicyStatement({
-          effect: Effect.ALLOW,
-          actions: ['s3:*'],
-          resources: ['*'] //'s3:PutObject, 's3:GetObject'
-        })
-      );
-
-
     // List all thumbnails
     const handlerListThumbnails = new Function(this, 'handler-function-list-thumbs', {
       runtime: Runtime.PYTHON_3_8, 
